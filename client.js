@@ -333,9 +333,21 @@ window.__ModuleLoader__.load({
       const disposers = [mountStyles()]
       const own = (d) => { if (typeof d === 'function') disposers.push(d) }
 
+      // The body and the chip are registered on the ROOT slot service: the seat
+      // `sidebar.right.pane.tab` is declared by the right sidebar, and its
+      // injection callback hands back the disposer to bind to the declaration.
+      // Registering them through an `inject([...])` scope instead would silently
+      // drop them on hosts where that scope has no `slots` face.
+      const slots = ctx && ctx.slots
+      if (slots && typeof slots.inject === 'function' && typeof slots.register === 'function') {
+        own(slots.inject('sidebar.right.pane.tab', () => slots.register({ name: 'sidebar.right.pane.tab', key: TAB_ID }, Panel)))
+        own(slots.inject('sidebar.right.pane.tab.title', () => slots.register({ name: 'sidebar.right.pane.tab.title', key: TAB_ID }, TabTitle)))
+      }
+
       if (typeof ctx.inject === 'function') {
         own(ctx.inject(['sidebarRightTabs'], (scoped) => {
-          const tabs = scoped && (scoped.sidebarRightTabs || (typeof scoped.get === 'function' ? scoped.get('sidebarRightTabs') : null))
+          const tabs = (scoped && (scoped.sidebarRightTabs || (typeof scoped.get === 'function' ? scoped.get('sidebarRightTabs') : null)))
+            || (typeof ctx.get === 'function' ? ctx.get('sidebarRightTabs') : null)
           if (!tabs || typeof tabs.register !== 'function') return () => {}
           own(tabs.register({
             id: TAB_ID,
@@ -350,11 +362,6 @@ window.__ModuleLoader__.load({
               icon: GalleryIcon,
             }],
           }))
-          const slots = scoped && scoped.slots
-          if (slots && typeof slots.register === 'function') {
-            own(slots.inject('sidebar.right.pane.tab', () => slots.register({ name: 'sidebar.right.pane.tab', key: TAB_ID }, Panel)))
-            own(slots.inject('sidebar.right.pane.tab.title', () => slots.register({ name: 'sidebar.right.pane.tab.title', key: TAB_ID }, TabTitle)))
-          }
           return () => {}
         }))
       }
