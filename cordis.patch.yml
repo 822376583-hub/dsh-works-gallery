@@ -1,0 +1,8 @@
+# dsh-works-gallery bundle patch: mounts the Host half — the read-only scan and
+# file-serving routes behind the right-sidebar panel.
+#
+# A pure insert(id/name) hot-mounts onto the running host: `name` must be the
+# real package name, because the loader imports the package by that name.
+- insert:
+    - id: dsh-works-gallery
+      name: dsh-works-gallery

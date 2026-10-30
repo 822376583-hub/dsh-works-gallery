@@ -1,0 +1,55 @@
+{
+  "name": "dsh-works-gallery",
+  "version": "0.1.0",
+  "description": "Works gallery for DSH: every image and clip made in your workspaces, newest first, as a thumbnail wall in the right sidebar.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "icon.png"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "gallery",
+    "media",
+    "sidebar",
+    "images",
+    "videos"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/822376583-hub/dsh-works-gallery.git"
+  },
+  "homepage": "https://github.com/822376583-hub/dsh-works-gallery#readme",
+  "bugs": {
+    "url": "https://github.com/822376583-hub/dsh-works-gallery/issues"
+  },
+  "author": "Wang Youqing",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ],
+      "platform": "web"
+    }
+  }
+}
