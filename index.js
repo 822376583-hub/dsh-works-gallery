@@ -1,23 +1,27 @@
 /**
  * dsh-works-gallery — 作品库 / Works gallery (Host half).
  *
- * Three read-only things:
+ * Four things:
  *   1. GET  /dsh-works-gallery/api/list    scan the workspace roots for images/videos,
  *                                          newest first
  *   2. GET  /dsh-works-gallery/file        stream one file (Range supported, so video
  *                                          seeking works)
- *   3. POST /dsh-works-gallery/api/reveal  open the file in the OS file manager
+ *   3. GET  /dsh-works-gallery/api/reveal  open the file in the OS file manager
+ *   4. POST /dsh-works-gallery/api/delete  move the files the user ticked into the OS
+ *                                          recycle bin (never an unlink: a wrong click
+ *                                          stays recoverable)
  *
  * Roots come from DSH_WORKS_GALLERY_ROOTS (`;` separated on Windows, `:` on
  * macOS/Linux). When unset, it scans the DSH workspaces directory
  * (~/Documents/deepseek-harness), which is where generated images and videos
  * land; if that does not exist it falls back to ~/Documents.
  *
- * Nothing here writes, moves or deletes a file.
+ * Only `api/delete` touches the disk, and only for paths that resolve inside a
+ * root and carry a media extension.
  */
-import { createReadStream, statSync, readdirSync, realpathSync } from 'node:fs'
+import { createReadStream, statSync, readdirSync, realpathSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { join, resolve, extname, sep, basename, dirname, delimiter } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
 
 export const name = 'dsh-works-gallery'
@@ -229,6 +233,118 @@ function reveal(fullPath) {
   spawn('xdg-open', [dir], { detached: true, stdio: 'ignore' }).unref()
 }
 
+const MAX_DELETE = 300
+
+// ASCII only: Windows PowerShell 5.1 reads a BOM-less script as ANSI, so the
+// paths travel through a UTF-8 (BOM) file instead of the script body.
+const RECYCLE_SCRIPT = `
+param([string]$ListFile, [string]$OutFile)
+Add-Type -AssemblyName Microsoft.VisualBasic
+$rows = New-Object System.Collections.ArrayList
+$lines = [System.IO.File]::ReadAllLines($ListFile, [System.Text.Encoding]::UTF8)
+foreach ($p in $lines) {
+  if ([string]::IsNullOrWhiteSpace($p)) { continue }
+  try {
+    if (-not (Test-Path -LiteralPath $p)) {
+      [void]$rows.Add([pscustomobject]@{ path = $p; ok = $false; error = 'missing' })
+      continue
+    }
+    [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+      $p,
+      [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+      [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
+    [void]$rows.Add([pscustomobject]@{ path = $p; ok = $true; error = '' })
+  } catch {
+    [void]$rows.Add([pscustomobject]@{ path = $p; ok = $false; error = $_.Exception.Message })
+  }
+}
+$json = ConvertTo-Json -InputObject @($rows) -Compress
+[System.IO.File]::WriteAllText($OutFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+`
+
+/** Move files to the OS recycle bin. Resolves with [{path, ok, error}]. */
+function recycle(paths) {
+  return new Promise((done) => {
+    let dir
+    try {
+      dir = mkdtempSync(join(tmpdir(), 'dsh-works-gallery-'))
+    } catch (error) {
+      return done(paths.map((p) => ({ path: p, ok: false, error: String(error && error.message) })))
+    }
+    const listFile = join(dir, 'paths.txt')
+    const outFile = join(dir, 'result.json')
+    // The BOM is what makes PowerShell 5.1 decode the file as UTF-8.
+    writeFileSync(listFile, '\ufeff' + paths.join('\r\n'), 'utf8')
+
+    const finish = (rows) => done(rows)
+
+    if (process.platform !== 'win32') {
+      const tool = process.platform === 'darwin' ? 'osascript' : 'gio'
+      const rows = []
+      const step = (i) => {
+        if (i >= paths.length) return finish(rows)
+        const p = paths[i]
+        const args = process.platform === 'darwin'
+          ? ['-e', `tell application "Finder" to delete POSIX file ${JSON.stringify(p)}`]
+          : ['trash', p]
+        const child = spawn(tool, args, { windowsHide: true })
+        let err = ''
+        child.stderr.on('data', (chunk) => { err += chunk })
+        child.on('error', (error) => { rows.push({ path: p, ok: false, error: String(error.message) }); step(i + 1) })
+        child.on('close', (code) => {
+          rows.push({ path: p, ok: code === 0, error: code === 0 ? '' : err.trim() || ('exit ' + code) })
+          step(i + 1)
+        })
+      }
+      return step(0)
+    }
+
+    const script = join(dir, 'recycle.ps1')
+    writeFileSync(script, RECYCLE_SCRIPT, 'utf8')
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script, listFile, outFile],
+      { windowsHide: true },
+    )
+    let err = ''
+    child.stderr.on('data', (chunk) => { err += chunk })
+    child.on('error', (error) => finish(paths.map((p) => ({ path: p, ok: false, error: String(error.message) }))))
+    child.on('close', () => {
+      try {
+        const raw = readFileSync(outFile, 'utf8').replace(/^\uFEFF/, '')
+        const rows = JSON.parse(raw)
+        finish(Array.isArray(rows) ? rows : [rows])
+      } catch (error) {
+        finish(paths.map((p) => ({ path: p, ok: false, error: (err.trim() || String(error && error.message)).slice(0, 400) })))
+      }
+    })
+  })
+}
+
+function readBody(req) {
+  return new Promise((done) => {
+    let raw = ''
+    let over = false
+    req.on('data', (chunk) => {
+      if (over) return
+      raw += chunk
+      if (raw.length > 512 * 1024) {
+        over = true
+        req.destroy()
+      }
+    })
+    req.on('end', () => {
+      if (over) return done({ error: 'body too large' })
+      try {
+        done({ body: raw ? JSON.parse(raw) : {} })
+      } catch (error) {
+        done({ error: 'invalid json' })
+      }
+    })
+    req.on('error', () => done({ error: 'request error' }))
+  })
+}
+
 function makeHandler(state) {
   return function handler(req, res) {
     let url
@@ -283,6 +399,43 @@ function makeHandler(state) {
         return json(res, 403, { ok: false, error: 'not a media file' })
       }
       return sendFile(req, res, full)
+    }
+
+    if (sub === '/api/delete') {
+      if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'POST required' })
+      return readBody(req).then(async ({ body, error }) => {
+        if (error) return json(res, 400, { ok: false, error })
+        const list = Array.isArray(body && body.paths) ? body.paths : []
+        if (!list.length) return json(res, 400, { ok: false, error: 'paths required' })
+        if (list.length > MAX_DELETE) return json(res, 400, { ok: false, error: `too many paths (max ${MAX_DELETE})` })
+
+        const accepted = []
+        const rejected = []
+        for (const raw of list) {
+          if (typeof raw !== 'string' || !raw) {
+            rejected.push({ path: String(raw), ok: false, error: 'bad path' })
+            continue
+          }
+          const full = resolve(raw)
+          if (!insideRoots(full)) {
+            rejected.push({ path: raw, ok: false, error: 'outside allowed roots' })
+            continue
+          }
+          if (!kindOf(extname(full).toLowerCase())) {
+            rejected.push({ path: raw, ok: false, error: 'not a media file' })
+            continue
+          }
+          accepted.push(full)
+        }
+
+        const results = accepted.length ? await recycle(accepted) : []
+        const rows = results.concat(rejected)
+        state.cache = null
+        const deleted = rows.filter((r) => r.ok).map((r) => r.path)
+        const failed = rows.filter((r) => !r.ok)
+        console.log('[works-gallery] delete', deleted.length, 'recycled,', failed.length, 'failed')
+        return json(res, 200, { ok: true, deleted, failed })
+      })
     }
 
     if (sub === '/api/reveal') {
