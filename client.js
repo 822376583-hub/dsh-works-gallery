@@ -50,6 +50,20 @@ window.__ModuleLoader__.load({
         copy: '复制路径',
         copied: '已复制',
         close: '关闭 (Esc)',
+        select: '选择',
+        selectAll: '全选',
+        clearSelection: '取消选择',
+        deleteBtn: '删除',
+        deleteTitle: '移到回收站',
+        selectedCount: (n) => '已选 ' + n + ' 个',
+        confirmText: (n) => '把选中的 ' + n + ' 个文件移到回收站？',
+        confirmYes: '移到回收站',
+        confirmNo: '再想想',
+        deleted: (n) => '已删除 ' + n + ' 个（可在回收站还原）',
+        deleteFailed: (n) => n + ' 个没能删除',
+        dismiss: '知道了',
+        done: '完成',
+        selectHint: '勾选想删的图或视频，再点「删除」',
       },
       en: {
         tab: 'Gallery',
@@ -76,6 +90,20 @@ window.__ModuleLoader__.load({
         copy: 'Copy path',
         copied: 'Copied',
         close: 'Close (Esc)',
+        select: 'Select',
+        selectAll: 'Select all',
+        clearSelection: 'Clear',
+        deleteBtn: 'Delete',
+        deleteTitle: 'Move to trash',
+        selectedCount: (n) => n + ' selected',
+        confirmText: (n) => 'Move ' + n + ' selected file(s) to the trash?',
+        confirmYes: 'Move to trash',
+        confirmNo: 'Keep them',
+        deleted: (n) => n + ' moved to the trash (recoverable)',
+        deleteFailed: (n) => n + ' could not be removed',
+        dismiss: 'Got it',
+        done: 'Done',
+        selectHint: 'Tick the images or clips you want gone, then hit Delete',
       },
     }
 
@@ -107,6 +135,16 @@ window.__ModuleLoader__.load({
 .wg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:6px}
 .wg-card{position:relative;border-radius:8px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.06));border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.09));cursor:pointer;aspect-ratio:1/1;transition:transform .12s ease,border-color .12s ease}
 .wg-card:hover{transform:translateY(-2px);border-color:var(--dsw-alias-brand-primary,#4c78ff)}
+.wg-card-sel{border-color:var(--dsw-alias-brand-primary,#4c78ff);box-shadow:inset 0 0 0 2px var(--dsw-alias-brand-primary,#4c78ff)}
+.wg-check{position:absolute;top:5px;left:5px;width:18px;height:18px;border-radius:6px;border:1.5px solid rgba(255,255,255,.85);background:rgba(0,0,0,.45);color:#fff;font-size:12px;line-height:1;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.wg-check.on{background:var(--dsw-alias-brand-primary,#4c78ff);border-color:var(--dsw-alias-brand-primary,#4c78ff)}
+.wg-danger{color:#ff7b72;border-color:rgba(255,123,114,.45)}
+.wg-danger:hover:not([disabled]){background:rgba(255,123,114,.14);border-color:#ff7b72}
+.wg-btn[disabled]{opacity:.45;cursor:default}
+.wg-confirm,.wg-notice,.wg-hint{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 10px;font-size:12px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.1));flex:none}
+.wg-confirm{background:rgba(255,123,114,.1)}
+.wg-notice{color:#7ee787}
+.wg-hint{color:var(--dsw-alias-label-secondary,#9aa0a6)}
 .wg-card img,.wg-card video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
 .wg-play{position:absolute;right:5px;bottom:5px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:9px;display:flex;align-items:center;justify-content:center;pointer-events:none}
 .wg-name{position:absolute;left:0;right:0;bottom:0;padding:12px 6px 4px;font-size:10.5px;color:#fff;background:linear-gradient(transparent,rgba(0,0,0,.72));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .12s}
@@ -179,10 +217,12 @@ window.__ModuleLoader__.load({
 
     function Card(props) {
       const item = props.item
+      const selecting = !!props.selecting
+      const selected = !!props.selected
       const common = {
-        onClick: () => props.onOpen(item),
+        onClick: () => (selecting ? props.onToggle(item) : props.onOpen(item)),
         title: item.name + '\n' + fmtSize(item.size),
-        className: 'wg-card',
+        className: 'wg-card' + (selected ? ' wg-card-sel' : ''),
       }
       const media = item.kind === 'video'
         ? h('video', { src: item.url, muted: true, preload: 'metadata', playsInline: true })
@@ -192,6 +232,7 @@ window.__ModuleLoader__.load({
         common,
         media,
         item.kind === 'video' ? h('div', { className: 'wg-play' }, '▶') : null,
+        selecting ? h('div', { className: 'wg-check' + (selected ? ' on' : ''), 'aria-hidden': true }, selected ? '✓' : '') : null,
         h('div', { className: 'wg-name' }, item.name),
       )
     }
@@ -242,6 +283,11 @@ window.__ModuleLoader__.load({
       const [filter, setFilter] = React.useState('all')
       const [query, setQuery] = React.useState('')
       const [open, setOpen] = React.useState(null)
+      const [selecting, setSelecting] = React.useState(false)
+      const [selected, setSelected] = React.useState(() => new Set())
+      const [confirming, setConfirming] = React.useState(false)
+      const [busy, setBusy] = React.useState(false)
+      const [notice, setNotice] = React.useState('')
 
       const items = React.useMemo(() => {
         const q = query.trim().toLowerCase()
@@ -269,28 +315,101 @@ window.__ModuleLoader__.load({
       const images = list.items.filter((i) => i.kind === 'image').length
       const videos = list.items.length - images
 
+      const toggle = (item) => {
+        setSelected((prev) => {
+          const next = new Set(prev)
+          if (next.has(item.path)) next.delete(item.path)
+          else next.add(item.path)
+          return next
+        })
+      }
+      const startSelect = () => { setNotice(''); setConfirming(false); setSelecting(true); setSelected(new Set()) }
+      const stopSelect = () => { setSelecting(false); setSelected(new Set()); setConfirming(false) }
+      const selectAllVisible = () => setSelected(new Set(items.map((it) => it.path)))
+      const clearSelection = () => setSelected(new Set())
+      const doDelete = () => {
+        const paths = [...selected]
+        setBusy(true)
+        setConfirming(false)
+        fetch(API + '/api/delete', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ paths }),
+        })
+          .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+          .then(({ ok, data }) => {
+            if (!ok || !data || !data.ok) throw new Error((data && data.error) || L.badResponse)
+            const deleted = data.deleted || []
+            const failed = data.failed || []
+            setBusy(false)
+            setSelecting(false)
+            setSelected(new Set())
+            setNotice(failed.length
+              ? (failed.length === paths.length ? L.deleteFailed(failed.length) : L.deleted(deleted.length) + ' · ' + L.deleteFailed(failed.length))
+              : L.deleted(deleted.length))
+            reload()
+          })
+          .catch((error) => {
+            setBusy(false)
+            setNotice(String((error && error.message) || error))
+          })
+      }
+
+      const controls = selecting
+        ? [
+            h('span', { className: 'wg-count', key: 'c' }, L.selectedCount(selected.size)),
+            h('button', { className: 'wg-btn', key: 'sa', onClick: selectAllVisible }, L.selectAll),
+            h('button', { className: 'wg-btn', key: 'cs', onClick: clearSelection }, L.clearSelection),
+            h('button', {
+              className: 'wg-btn wg-danger',
+              key: 'del',
+              disabled: busy || !selected.size,
+              onClick: () => { if (selected.size) setConfirming(true) },
+            }, L.deleteBtn),
+            h('button', { className: 'wg-btn', key: 'done', onClick: stopSelect }, L.done),
+          ]
+        : [
+            h('span', { className: 'wg-count', key: 'c' }, list.status === 'loading' ? L.scanning : L.counts(images, videos)),
+            h(
+              'div',
+              { className: 'wg-seg', key: 'seg' },
+              h('button', { className: filter === 'all' ? 'on' : '', onClick: () => setFilter('all') }, L.all),
+              h('button', { className: filter === 'image' ? 'on' : '', onClick: () => setFilter('image') }, L.images),
+              h('button', { className: filter === 'video' ? 'on' : '', onClick: () => setFilter('video') }, L.videos),
+            ),
+            h('input', {
+              className: 'wg-search',
+              key: 'q',
+              placeholder: L.search,
+              value: query,
+              onChange: (e) => setQuery(e.target.value),
+            }),
+            h('button', { className: 'wg-btn', key: 'rf', onClick: reload, title: L.refreshTitle }, L.refresh),
+            h('button', { className: 'wg-btn', key: 'sel', onClick: startSelect, title: L.selectHint }, L.select),
+          ]
+
       return h(
         'div',
         { className: 'wg-root' },
-        h(
-          'div',
-          { className: 'wg-bar' },
-          h('span', { className: 'wg-count' }, list.status === 'loading' ? L.scanning : L.counts(images, videos)),
-          h(
-            'div',
-            { className: 'wg-seg' },
-            h('button', { className: filter === 'all' ? 'on' : '', onClick: () => setFilter('all') }, L.all),
-            h('button', { className: filter === 'image' ? 'on' : '', onClick: () => setFilter('image') }, L.images),
-            h('button', { className: filter === 'video' ? 'on' : '', onClick: () => setFilter('video') }, L.videos),
-          ),
-          h('input', {
-            className: 'wg-search',
-            placeholder: L.search,
-            value: query,
-            onChange: (e) => setQuery(e.target.value),
-          }),
-          h('button', { className: 'wg-btn', onClick: reload, title: L.refreshTitle }, L.refresh),
-        ),
+        h('div', { className: 'wg-bar' }, controls),
+        confirming
+          ? h(
+              'div',
+              { className: 'wg-confirm' },
+              h('span', null, L.confirmText(selected.size)),
+              h('button', { className: 'wg-btn wg-danger', onClick: doDelete }, L.confirmYes),
+              h('button', { className: 'wg-btn', onClick: () => setConfirming(false) }, L.confirmNo),
+            )
+          : null,
+        notice
+          ? h(
+              'div',
+              { className: 'wg-notice' },
+              h('span', null, notice),
+              h('button', { className: 'wg-btn', onClick: () => setNotice('') }, L.dismiss),
+            )
+          : null,
+        selecting && !confirming ? h('div', { className: 'wg-hint' }, L.selectHint) : null,
         h(
           'div',
           { className: 'wg-body' },
@@ -304,7 +423,14 @@ window.__ModuleLoader__.load({
               'div',
               { key: g.key },
               h('div', { className: 'wg-day' }, g.key + ' · ' + g.items.length),
-              h('div', { className: 'wg-grid' }, g.items.map((it) => h(Card, { key: it.path, item: it, onOpen: setOpen }))),
+              h('div', { className: 'wg-grid' }, g.items.map((it) => h(Card, {
+                key: it.path,
+                item: it,
+                onOpen: setOpen,
+                selecting,
+                selected: selected.has(it.path),
+                onToggle: toggle,
+              }))),
             ),
           ),
         ),
