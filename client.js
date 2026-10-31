@@ -377,7 +377,16 @@ window.__ModuleLoader__.load({
         if (!selecting || e.button !== 0 || !bodyRef.current) return
         const target = e.target
         if (target && target.closest && target.closest('.wg-btn, .wg-search')) return
-        dragRef.current = { x: e.clientX, y: e.clientY, base: selected, moved: false, pointerId: e.pointerId, captured: false }
+        const from = target && target.closest ? target.closest('[data-path]') : null
+        dragRef.current = {
+          x: e.clientX,
+          y: e.clientY,
+          base: selected,
+          origin: from ? from.getAttribute('data-path') : null,
+          moved: false,
+          pointerId: e.pointerId,
+          captured: false,
+        }
       }
 
       const onMove = (e) => {
@@ -404,6 +413,7 @@ window.__ModuleLoader__.load({
           height: box.bottom - box.top,
         })
         const next = new Set(d.base)
+        if (d.origin) next.add(d.origin)
         hitTest(body, box).forEach((p) => next.add(p))
         setSelected(next)
       }
