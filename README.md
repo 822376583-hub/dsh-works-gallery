@@ -18,7 +18,11 @@ scrolling back through old chats to find the poster you generated last week.
   (the file route speaks `Range`, so scrubbing works).
 - **Filters** — All / Images / Videos, plus a file-name search across path and name.
 - **Show in folder** and **copy path** straight from the lightbox.
-- **Read-only.** Nothing is written, moved or deleted; the two write-free routes only stream files.
+- **Tidy up without fear.** Hit **Select**, tick any number of thumbnails, and **Delete** moves them
+  to the OS recycle bin — one click restores them from there. Non-media files, and anything outside
+  the roots, is refused by the host.
+- **Read-only by default.** Only the delete route touches the disk, and only for the files you
+  ticked that live under a root.
 
 ## Where the files come from
 
@@ -70,13 +74,14 @@ tab bar it stays available as its own tab afterwards.
 
 ## HTTP routes
 
-All under `/dsh-works-gallery`, all read-only:
+All under `/dsh-works-gallery`. Only the last one touches the disk:
 
 | Route | Purpose |
 | --- | --- |
 | `GET /api/list` | `{ ok, roots, total, truncated, items[] }`, newest first, capped at 5000 entries / depth 8 |
 | `GET /file?path=…` | Streams one media file; supports `Range` (206) so video seeking works |
 | `GET /api/reveal?path=…` | Reveals the file in Explorer / Finder / the desktop file manager |
+| `POST /api/delete` | `{ paths: [...] }` (max 300) → moves each file to the OS recycle bin. Returns `{ ok, deleted[], failed[{path,error}] }`; paths outside the roots, or without a media extension, are refused |
 
 Skipped while scanning: `node_modules`, `.git`, `.cache`, `dist`, `venv`, `__pycache__`, dot-directories
 and other dependency/build folders.
