@@ -63,7 +63,7 @@ window.__ModuleLoader__.load({
         deleteFailed: (n) => n + ' 个没能删除',
         dismiss: '知道了',
         done: '完成',
-        selectHint: '勾选想删的图或视频，再点「删除」',
+        selectHint: '拖一片空白处可以框选多张；也可以逐个点选，然后按「删除」',
       },
       en: {
         tab: 'Gallery',
@@ -103,7 +103,7 @@ window.__ModuleLoader__.load({
         deleteFailed: (n) => n + ' could not be removed',
         dismiss: 'Got it',
         done: 'Done',
-        selectHint: 'Tick the images or clips you want gone, then hit Delete',
+        selectHint: 'Drag across empty space to select several at once, or tick them one by one, then hit Delete',
       },
     }
 
@@ -130,7 +130,9 @@ window.__ModuleLoader__.load({
 .wg-btn:hover{border-color:var(--dsw-alias-brand-primary,#4c78ff)}
 .wg-search{flex:1 1 90px;min-width:80px;background:var(--dsw-alias-bg-layer-1,rgba(0,0,0,.2));border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.14));border-radius:8px;padding:4px 8px;color:inherit;font-size:12px;outline:none}
 .wg-search:focus{border-color:var(--dsw-alias-brand-primary,#4c78ff)}
-.wg-body{flex:1;min-height:0;overflow:auto;padding:6px 10px 20px}
+.wg-body{flex:1;min-height:0;overflow:auto;padding:6px 10px 20px;position:relative}
+.wg-body.wg-selecting{cursor:crosshair;user-select:none;-webkit-user-select:none}
+.wg-marquee{position:absolute;z-index:5;pointer-events:none;border:1px solid var(--dsw-alias-brand-primary,#4c78ff);background:rgba(76,120,255,.16);border-radius:4px}
 .wg-day{position:sticky;top:0;z-index:2;padding:8px 0 6px;font-size:11px;font-weight:600;letter-spacing:.03em;color:var(--dsw-alias-label-secondary,#9aa0a6);background:linear-gradient(var(--dsw-alias-bg-base,#14161a) 70%,transparent)}
 .wg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:6px}
 .wg-card{position:relative;border-radius:8px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.06));border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.09));cursor:pointer;aspect-ratio:1/1;transition:transform .12s ease,border-color .12s ease}
@@ -223,6 +225,7 @@ window.__ModuleLoader__.load({
         onClick: () => (selecting ? props.onToggle(item) : props.onOpen(item)),
         title: item.name + '\n' + fmtSize(item.size),
         className: 'wg-card' + (selected ? ' wg-card-sel' : ''),
+        'data-path': item.path,
       }
       const media = item.kind === 'video'
         ? h('video', { src: item.url, muted: true, preload: 'metadata', playsInline: true })
@@ -288,6 +291,9 @@ window.__ModuleLoader__.load({
       const [confirming, setConfirming] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
       const [notice, setNotice] = React.useState('')
+      const bodyRef = React.useRef(null)
+      const dragRef = React.useRef(null)
+      const [marquee, setMarquee] = React.useState(null)
 
       const items = React.useMemo(() => {
         const q = query.trim().toLowerCase()
@@ -355,6 +361,68 @@ window.__ModuleLoader__.load({
           })
       }
 
+      const hitTest = (body, box) => {
+        const hits = new Set()
+        const nodes = body.querySelectorAll('[data-path]')
+        for (let i = 0; i < nodes.length; i++) {
+          const r = nodes[i].getBoundingClientRect()
+          if (r.left < box.right && r.right > box.left && r.top < box.bottom && r.bottom > box.top) {
+            hits.add(nodes[i].getAttribute('data-path'))
+          }
+        }
+        return hits
+      }
+
+      const onDown = (e) => {
+        if (!selecting || e.button !== 0 || !bodyRef.current) return
+        const target = e.target
+        if (target && target.closest && target.closest('.wg-btn, .wg-search')) return
+        dragRef.current = { x: e.clientX, y: e.clientY, base: selected, moved: false, pointerId: e.pointerId, captured: false }
+      }
+
+      const onMove = (e) => {
+        const d = dragRef.current
+        const body = bodyRef.current
+        if (!d || !body) return
+        if (!d.moved && Math.abs(e.clientX - d.x) < 4 && Math.abs(e.clientY - d.y) < 4) return
+        if (!d.moved) {
+          d.moved = true
+          // capture only once it is really a drag, so a plain click still reaches the card
+          try { body.setPointerCapture(e.pointerId); d.captured = true } catch (err) { /* older engines */ }
+        }
+        const rect = body.getBoundingClientRect()
+        const box = {
+          left: Math.min(d.x, e.clientX),
+          top: Math.min(d.y, e.clientY),
+          right: Math.max(d.x, e.clientX),
+          bottom: Math.max(d.y, e.clientY),
+        }
+        setMarquee({
+          left: box.left - rect.left + body.scrollLeft,
+          top: box.top - rect.top + body.scrollTop,
+          width: box.right - box.left,
+          height: box.bottom - box.top,
+        })
+        const next = new Set(d.base)
+        hitTest(body, box).forEach((p) => next.add(p))
+        setSelected(next)
+      }
+
+      const onUp = (e) => {
+        const d = dragRef.current
+        dragRef.current = null
+        setMarquee(null)
+        if (d && d.captured && bodyRef.current) {
+          try { bodyRef.current.releasePointerCapture(d.pointerId) } catch (err) { /* not captured */ }
+        }
+        if (d && d.moved) {
+          // a click still lands on the card underneath the release point — swallow it once
+          const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault() }
+          document.addEventListener('click', swallow, true)
+          setTimeout(() => document.removeEventListener('click', swallow, true), 0)
+        }
+      }
+
       const controls = selecting
         ? [
             h('span', { className: 'wg-count', key: 'c' }, L.selectedCount(selected.size)),
@@ -412,7 +480,25 @@ window.__ModuleLoader__.load({
         selecting && !confirming ? h('div', { className: 'wg-hint' }, L.selectHint) : null,
         h(
           'div',
-          { className: 'wg-body' },
+          {
+            className: 'wg-body' + (selecting ? ' wg-selecting' : ''),
+            ref: bodyRef,
+            onPointerDown: onDown,
+            onPointerMove: onMove,
+            onPointerUp: onUp,
+            onPointerCancel: onUp,
+          },
+          marquee
+            ? h('div', {
+                className: 'wg-marquee',
+                style: {
+                  left: marquee.left + 'px',
+                  top: marquee.top + 'px',
+                  width: marquee.width + 'px',
+                  height: marquee.height + 'px',
+                },
+              })
+            : null,
           list.status === 'loading' && !list.items.length ? h('div', { className: 'wg-loading' }, L.loading) : null,
           list.status === 'error' ? h('div', { className: 'wg-empty wg-err' }, L.failed + list.error) : null,
           list.status !== 'loading' && !list.status.startsWith('error') && !items.length
